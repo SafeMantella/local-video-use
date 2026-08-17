@@ -1,12 +1,10 @@
 [project]
-name = "video-use"
+name = "local-video-use"
 version = "0.1.0"
 description = "Conversation-driven video editor skill for Claude Code"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
-    "requests",
-    "librosa",
     "matplotlib",
     "pillow",
     "numpy",
@@ -14,6 +12,7 @@ dependencies = [
 
 [project.optional-dependencies]
 animations = ["manim"]
+diarize = ["pyannote.audio"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
