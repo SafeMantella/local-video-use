@@ -19,7 +19,7 @@ description: Edit any video by conversation. Transcribe, cut, color grade, gener
 
 These are the things where deviation produces silent failures or broken output. They are not taste, they are correctness. Memorize them.
 
-1. **Subtitles are applied LAST in the filter chain**, after every overlay. Otherwise overlays hide captions. Silent failure.
+1. **Pipeline order is fixed: record → cut → visual variations → motion graphics/overlays → subtitles LAST.** "Visual variations" means anything that transforms the base image itself — punch-in/zoom, reframe/pan, speed ramps, additional grade passes beyond the per-segment grade. These apply to the clean, concatenated cut (no overlays or captions baked in yet), never after overlays/subtitles are composited. Reasons: (a) zooming/cropping an already-composited frame resamples the overlay graphics too — pill edges, text, and UI elements visibly soften or glitch under the same scale/crop transform a live-action frame tolerates fine; (b) if the visual variation's timing or parameters change later, you'd have to re-time and re-composite every overlay again instead of just the base. Subtitles specifically are applied LAST, after every overlay, on top of visual variations too — otherwise overlays hide captions. Silent failure either way.
 2. **Per-segment extract → lossless `-c copy` concat**, not single-pass filtergraph. Otherwise you double-encode every segment when overlays are added.
 3. **30ms audio fades at every segment boundary** (`afade=t=in:st=0:d=0.03,afade=t=out:st={dur-0.03}:d=0.03`). Otherwise audible pops at every cut.
 4. **Overlays use `setpts=PTS-STARTPTS+T/TB`** to shift the overlay's frame 0 to its window start. Otherwise you see the middle of the animation during the overlay window.
@@ -31,6 +31,7 @@ These are the things where deviation produces silent failures or broken output. 
 10. **Parallel sub-agents for multiple animations.** Never sequential. Spawn N at once via the `Agent` tool; total wall time ≈ slowest one.
 11. **Strategy confirmation before execution.** Never touch the cut until the user has approved the plain-English plan.
 12. **All session outputs in `<videos_dir>/edit/`.** Never write inside the `local-video-use/` project directory.
+13. **Never delete a rendered video output.** Not a superseded version, not a confirmed-buggy one, not an intermediate — nothing gets `rm`'d automatically, ever, even when it looks obviously safe. If disk space or clutter is a real problem, ask the user what to remove; never decide it yourself. (A prior session assumed old versions were "safe to delete once the next one is approved," wrote that assumption into `project.md`, and future sessions kept following it — the assumption was never actually confirmed by the user. Don't repeat that pattern.)
 
 Everything else in this document is a worked example. Deviate whenever the material calls for it.
 
@@ -75,7 +76,7 @@ Helpers (`helpers/transcribe.py`, `helpers/render.py`, etc.) live alongside this
 - **`transcribe_batch.py <videos_dir>`** — batch transcription, 1 worker by default (GPU-bound). Use for multi-take.
 - **`pack_transcripts.py --edit-dir <dir>`** — `transcripts/*.json` → `takes_packed.md` (phrase-level, break on silence ≥ 0.5s).
 - **`timeline_view.py <video> <start> <end>`** — filmstrip + waveform PNG. On-demand visual drill-down. **Not a scan tool** — use it at decision points, not constantly.
-- **`render.py <edl.json> -o <out>`** — per-segment extract → concat → overlays (PTS-shifted) → subtitles LAST. `--preview` for 720p fast. `--build-subtitles` to generate master.srt inline.
+- **`render.py <edl.json> -o <out>`** — per-segment extract → concat → visual variations (zoom/reframe/speed, if any) → overlays (PTS-shifted) → subtitles LAST. `--preview` for 720p fast. `--build-subtitles` to generate master.srt inline.
 - **`grade.py <in> -o <out>`** — ffmpeg filter chain grade. Presets + `--filter '<raw>'` for custom.
 
 For animations, create `<edit>/animations/slot_<id>/` with `Bash` and spawn a sub-agent via the `Agent` tool.
@@ -174,6 +175,14 @@ Mental model is ASC CDL. Per channel: `out = (in * slope + offset) ** power`, th
 For anything else — portraiture, nature, product, music video, documentary — invent your own chain. `grade.py --filter '<raw ffmpeg>'` accepts any filter string.
 
 Hard rules: apply **per-segment during extraction** (not post-concat, which re-encodes twice). Never go aggressive without testing skin tones.
+
+## Visual variations (when requested)
+
+Punch-ins/zooms, reframes/pans, speed ramps — anything that transforms the base image beyond color. Reason about it the same way as grade: look at the cut, decide where a variation earns its keep (a tension beat, a transition, a punchline), build it, look again.
+
+**A punch-in zoom via ffmpeg needs `scale(eval=frame) → crop(fixed size)`, not a time-varying `crop`.** ffmpeg's `crop` filter only evaluates its `w`/`h` expressions once at init (confirmed empirically — a `t`-based `w`/`h` expression throws "Error when evaluating the expression" even at frame 0); only `x`/`y` are re-evaluated per frame. So scale the frame up by a per-frame `t`-based zoom factor (`scale=w='W*z(t)':h='H*z(t)':eval=frame`), then crop back down to the **constant** target size, centered (`crop=w=W:h=H:x='(iw-ow)/2':y='(ih-oh)/2'`). For a ramp-in/hold/ramp-out shape, build `z(t)` as a piecewise `if(lt(t,...),...,if(lt(t,...),...,...))` expression, and keep `z(t)=1` exactly at both edges of the affected window so it splices back into the unaffected footage with no visible pop.
+
+Hard rule: apply on the **clean, concatenated, no-overlays-yet** cut (see Hard Rule 1) — same reasoning as color grade, but even more important here since scale/crop resampling is more visually destructive to overlay graphics (text, pills) than a grade's color-only transform.
 
 ## Subtitles (when requested)
 
@@ -314,6 +323,7 @@ Things that consistently fail regardless of style:
 - **Defaulting to a quantized model (`turbo-q5_0`) for reliability-sensitive transcription.** Observed hallucinating a single repeated word across long quiet/noisy stretches on a real 18-min recording (`não. não. não.` looping for ~8 minutes), where full-precision `large-v3` transcribed the same audio correctly throughout. `large-v3` is the default for this reason — `turbo-q5_0` is an opt-in speed trade. `transcribe.py` also caps any single word's inferred duration at 2s as a cheap defensive net regardless of model, since a hallucinated word reads as an implausibly long one.
 - **Enabling whisper.cpp's `--vad` flag for CLI JSON output.** Confirmed in the whisper.cpp source: `whisper_full_get_token_data()` (what the CLI's `-ojf` exporter calls) returns raw, VAD-compressed-timeline token times — only the separate `whisper_full_get_token_t0/t1()` getters remap back to the original audio timeline, and the CLI doesn't use them. With `--vad` on, JSON timestamps silently stop corresponding to real positions in the source video — a cut based on them would extract the wrong footage. Don't enable it until whisper.cpp's CLI fixes this upstream.
 - **Burning subtitles into base before compositing overlays.** Overlays hide them. (Hard Rule 1.)
+- **Applying a punch-in/zoom/reframe after overlays or captions are already composited.** Resamples the overlay graphics (soft/glitchy pill edges and text) and forces a full re-composite if the variation's timing changes later. Do it on the clean cut, before any overlay. (Hard Rule 1.)
 - **Single-pass filtergraph when you have overlays.** Double re-encodes. Use per-segment extract → concat.
 - **Linear animation easing.** Looks robotic. Always cubic.
 - **Hard audio cuts at segment boundaries.** Audible pops. (Hard Rule 3.)
@@ -322,3 +332,4 @@ Things that consistently fail regardless of style:
 - **Editing before confirming the strategy.** Never.
 - **Re-transcribing cached sources.** Immutable outputs of immutable inputs.
 - **Assuming what kind of video it is.** Look first, ask second, edit last.
+- **Deleting a superseded or buggy render.** Never automatic. (Hard Rule 13.)
