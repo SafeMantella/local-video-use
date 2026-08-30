@@ -30,5 +30,6 @@ Caveat: sozinho, o edl.json só tem cortes secos. Punch-in (passo 6) e overlays 
 Passo 10: "1 comando ffmpeg, camadas por `-itsoffset` em ordem cronológica, legenda por último". Hoje a LLM constrói o comando à mão a partir dos metadados dos slots toda vez.
 
 1. `assemble.py <manifest.json>` — manifesto = `base.mp4` + camadas `{file, offset_s, z}` (renders alpha dos slots + legenda por último). Constrói e roda o ffmpeg em background.
-2. Verificação embutida: `ffprobe` no arquivo real (resolução, fps, duração, vídeo+áudio presentes) — nunca confiar no log.
-3. `--preview`: versão comprimida (`scale=960:-2`, crf 24) + contact sheet, ou reusar `timeline_view.py`.
+2. **Saída padrão = preview** (`scale=960:-2`, crf 24 — menor e rápido). Master em resolução cheia só com `--full-res`, e só quando o Pedro autorizar (economiza armazenamento — regra do SOP). Não gerar full-res "pra já ter".
+3. Verificação embutida: `ffprobe` no arquivo real (resolução, fps, duração, vídeo+áudio presentes) — nunca confiar no log.
+4. Contact sheet junto do preview, ou reusar `timeline_view.py`.
